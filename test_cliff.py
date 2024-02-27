@@ -1,6 +1,6 @@
 import pytest
-import jax, jax.numpy as jnp
-from cliff_jax import Cliff
+import jax.numpy as jnp
+from cliff import Cliff
 
 def test_construct_cliff():
   Cliff.full()
