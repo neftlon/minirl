@@ -13,12 +13,21 @@ class Rect(typing.NamedTuple):
 
 @dataclasses.dataclass(frozen=True)
 class Cliff(Env):
-  start_pos: typing.Optional[tuple[int, int] | typing.Sequence[tuple[int, int]]] # player start position
-  end_pos: typing.Optional[tuple[int, int]] # player end position
+  class RewardScheme(typing.NamedTuple):
+    step_penalty: int = -1
+    cliff_penalty: int = -4
+    win_reward: int = 51
+    not_in_bounds_penalty: int = 0
+    # (has_won, has_time, in_bounds, in_cliff)
+    done_pos_mask: tuple[bool, bool, bool, bool] = (True,False,False,False) # (4,)
+    done_neg_mask: tuple[bool, bool, bool, bool] = (False,True,False,False)# (4,)
+  
+  start_pos: typing.Optional[tuple[int, int] | tuple[tuple[int, int], ...]] = (2,0) # player start position
+  end_pos: typing.Optional[tuple[int, int]] = (2,7) # player end position
   # rectangular cliff location
-  cliff: typing.Optional[Rect]
+  cliff: typing.Optional[Rect] = Rect(min=(2,1), max=(2,6))
   # reward scheme
-  rs: "Cliff.RewardScheme"
+  reward_scheme: "Cliff.RewardScheme" = RewardScheme()
   width: int = 8
   height: int = 3
   max_steps: int = 20
@@ -34,35 +43,15 @@ class Cliff(Env):
     @classmethod
     def start(cls, state) -> "Cliff.InternalState":
       return cls(state=state, step=jnp.asarray(0))
-  
-  class RewardScheme(typing.NamedTuple):
-    step_penalty: int
-    cliff_penalty: int
-    win_reward: int
-    not_in_bounds_penalty: int
-    # (has_won, has_time, in_bounds, in_cliff)
-    done_pos_mask: tuple[bool, bool, bool, bool] # (4,)
-    done_neg_mask: tuple[bool, bool, bool, bool] # (4,)
-
-    @classmethod
-    def full(cls) -> "Cliff.RewardScheme":
-      return cls(
-        step_penalty=-1,
-        cliff_penalty=-4,
-        win_reward=51,
-        not_in_bounds_penalty=0,
-        done_pos_mask=(True,False,False,False),
-        done_neg_mask=(False,True,False,False),
-      )
 
   def observe(self, internal_state: "InternalState") -> jax.Array: # int
     return internal_state.state
   
   def step(self, internal_state: "InternalState", action: int) -> Env.StepResult:
-    rs = self.rs
+    rs = self.reward_scheme
 
     # compute proposed step result
-    loc = self.state2pos(internal_state.state)
+    loc = jnp.asarray(Cliff.state2pos(self.width, internal_state.state))
     move = jnp.array(self.ACTION2DIR)[action]
     max_pos = jnp.array([self.height - 1, self.width - 1])
     prop_loc = jnp.minimum(jnp.maximum(loc + move, jnp.zeros_like(loc)), max_pos)
@@ -78,7 +67,7 @@ class Cliff(Env):
     bools = jnp.stack((has_won, has_time, in_bounds, in_cliff))
     done = jnp.any((bools & jnp.asarray(rs.done_pos_mask)) | (~bools & jnp.asarray(rs.done_neg_mask)))
     newloc = jnp.where(in_bounds & ~in_cliff, prop_loc, loc)
-    newstate = self.pos2state(newloc)
+    newstate = Cliff.pos2state(self.width, newloc)
     newstep = jnp.where(~done, step, step - 1)
 
     # compute reward
@@ -103,23 +92,58 @@ class Cliff(Env):
       if start_pos.ndim == 2:
         # pick a random position from the given ones
         start_pos = jr.choice(key, start_pos)
-      state = self.pos2state(start_pos)
+      state = Cliff.pos2state(self.width, start_pos)
     return Cliff.InternalState.start(state)
   
-  def state2pos(self, state):
+  @staticmethod
+  def state2pos(width, state):
     "int -> (y, x): tuple[int, int]"
-    return jnp.stack(jnp.divmod(state, self.width))
+    return divmod(state, width)
   
-  def pos2state(self, pos):
+  @staticmethod
+  def pos2state(width, pos):
     "(y, x): tuple[int, int] -> int"
-    return pos[0] * self.width + pos[1]
+    return pos[0] * width + pos[1]
   
   @classmethod
-  def full(cls) -> "Cliff":
+  def avoid_walls(cls, max_steps: int) -> "Cliff":
     return cls(
-      start_pos=(2,0),
-      end_pos=(2,7),
-      cliff=Rect(min=(2,1), max=(2,6)),
-      rs=Cliff.RewardScheme.full(),
+      start_pos=None, # can start in a random location
+      end_pos=None, # there is no end location
+      cliff=None, # there is no cliff either
+      reward_scheme=Cliff.RewardScheme(
+        step_penalty=1, # steps are good
+        cliff_penalty=0, # there is no cliff
+        win_reward=0, # there is no winning
+        not_in_bounds_penalty=-5, # not in bounds is bad
+        done_pos_mask=(False,False,False,False),
+        done_neg_mask=(False,True,False,False),
+      ),
+      max_steps=max_steps,
     )
   
+  @classmethod
+  def reach_goal_without_cliff(cls, max_steps: int) -> "Cliff":
+    return cls(
+      start_pos=None, # random start position
+      cliff=None, # no cliff
+      max_steps=max_steps,
+    )
+  
+  @classmethod
+  def avoid_walls_and_cliff(cls, max_steps: int) -> "Cliff":
+    width = 8
+    start_pos = tuple([Cliff.state2pos(width, s) for s in [*range(0,17)] + [23]])
+    return cls(
+      start_pos=start_pos,
+      end_pos=None,
+      reward_scheme=Cliff.RewardScheme(
+        step_penalty=1,
+        cliff_penalty=-5,
+        win_reward=0,
+        not_in_bounds_penalty=-5,
+        done_pos_mask=(False,False,False,False),
+        done_neg_mask=(False,True,False,False),
+      ),
+      max_steps=max_steps,
+    )
