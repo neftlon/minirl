@@ -15,7 +15,7 @@ class Env:
 
   def step(self, internal_state: "Env.InternalState", action) -> "Env.StepResult": ...
 
-  def reset(self) -> "Env.InternalState": ...
+  def reset(self, key: jax.Array) -> "Env.InternalState": ...
 
 class Buf(typing.NamedTuple):
   max_num_eps: jax.Array # int
@@ -143,9 +143,10 @@ def run_episode(key, model, params, buf: Buf, buf_state: Buf.State, env: Env) ->
       done=done,
     )
 
+  key, reset_key = jr.split(key)
   state = LoopState(
     key=key,
-    env_state=env.reset(),
+    env_state=env.reset(reset_key),
     buf_state=buf_state,
     done=jnp.asarray(False),
   )
@@ -153,7 +154,7 @@ def run_episode(key, model, params, buf: Buf, buf_state: Buf.State, env: Env) ->
   buf_state = buf.end_episode(state.buf_state) # finalize episode
   return buf_state
 
-@functools.partial(jax.jit, static_argnames=["model"])
+@functools.partial(jax.jit, static_argnames=["model", "env"])
 def fill_buffer(key, model, params, buf: Buf, buf_state: Buf.State, env: Env) -> Buf.State:
   "Run episodes until `buf`/`buf_state` cannot store another episode."
   class LoopState(typing.NamedTuple):

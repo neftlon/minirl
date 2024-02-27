@@ -1,14 +1,23 @@
-import typing, chex
-import jax, jax.numpy as jnp
+import typing, dataclasses, chex
+import jax, jax.numpy as jnp, jax.random as jr
 from util import Env
 
-@chex.dataclass(frozen=True)
+class Rect(typing.NamedTuple):
+  # both are inclusive
+  min: tuple[int, int]
+  max: tuple[int, int]
+
+  def contains(self, p: jax.Array) -> jax.Array:
+    min, max = jnp.asarray(self.min), jnp.asarray(self.max)
+    return jnp.all((min <= p) & (p <= max))
+
+@dataclasses.dataclass(frozen=True)
 class Cliff(Env):
-  start_pos: jax.Array # player start position
-  end_pos: jax.Array # player end position
-  # quadratic cliff dimensions (both are inclusive)
-  min_cliff: jax.Array
-  max_cliff: jax.Array
+  start_pos: typing.Optional[tuple[int, int] | typing.Sequence[tuple[int, int]]] # player start position
+  end_pos: typing.Optional[tuple[int, int]] # player end position
+  # rectangular cliff location
+  cliff: typing.Optional[Rect]
+  # reward scheme
   rs: "Cliff.RewardScheme"
   width: int = 8
   height: int = 3
@@ -27,23 +36,23 @@ class Cliff(Env):
       return cls(state=state, step=jnp.asarray(0))
   
   class RewardScheme(typing.NamedTuple):
-    step_penalty: jax.Array # int
-    cliff_penalty: jax.Array # int
-    win_reward: jax.Array # int
-    not_in_bounds_penalty: jax.Array # int
+    step_penalty: int
+    cliff_penalty: int
+    win_reward: int
+    not_in_bounds_penalty: int
     # (has_won, has_time, in_bounds, in_cliff)
-    done_pos_mask: jax.Array # (4,)
-    done_neg_mask: jax.Array # (4,)
+    done_pos_mask: tuple[bool, bool, bool, bool] # (4,)
+    done_neg_mask: tuple[bool, bool, bool, bool] # (4,)
 
     @classmethod
     def full(cls) -> "Cliff.RewardScheme":
       return cls(
-        step_penalty=jnp.asarray(-1),
-        cliff_penalty=jnp.asarray(-4),
-        win_reward=jnp.asarray(51),
-        not_in_bounds_penalty=jnp.asarray(0),
-        done_pos_mask=jnp.asarray([True,False,False,False]),
-        done_neg_mask=jnp.asarray([False,True,False,False]),
+        step_penalty=-1,
+        cliff_penalty=-4,
+        win_reward=51,
+        not_in_bounds_penalty=0,
+        done_pos_mask=(True,False,False,False),
+        done_neg_mask=(False,True,False,False),
       )
 
   def observe(self, internal_state: "InternalState") -> jax.Array: # int
@@ -61,13 +70,13 @@ class Cliff(Env):
 
     # compute propositions
     in_bounds = jnp.any(prop_loc != loc)
-    in_cliff = jnp.all((self.min_cliff <= prop_loc) & (prop_loc <= self.max_cliff))
-    has_won = jnp.all(prop_loc == self.end_pos)
+    in_cliff = self.cliff.contains(prop_loc) if self.cliff is not None else jnp.asarray(False)
+    has_won = jnp.all(prop_loc == jnp.asarray(self.end_pos)) if self.end_pos is not None else jnp.asarray(False)
     has_time = jnp.bool(step < self.max_steps)
 
     # check if step is valid and compute new state
     bools = jnp.stack((has_won, has_time, in_bounds, in_cliff))
-    done = jnp.any((bools & rs.done_pos_mask) | (~bools & rs.done_neg_mask))
+    done = jnp.any((bools & jnp.asarray(rs.done_pos_mask)) | (~bools & jnp.asarray(rs.done_neg_mask)))
     newloc = jnp.where(in_bounds & ~in_cliff, prop_loc, loc)
     newstate = self.pos2state(newloc)
     newstep = jnp.where(~done, step, step - 1)
@@ -84,8 +93,17 @@ class Cliff(Env):
     newinternalstate = Cliff.InternalState(state=newstate, step=newstep)
     return Env.StepResult(state=newinternalstate, reward=reward, done=done)
   
-  def reset(self) -> "InternalState":
-    state = self.pos2state(self.start_pos)
+  def reset(self, key) -> "InternalState":
+    if self.start_pos is None:
+      # pick a random position on whole field
+      state = jr.choice(key, 24)
+    else:
+      start_pos = jnp.asarray(self.start_pos)
+      assert start_pos.ndim in [1,2]
+      if start_pos.ndim == 2:
+        # pick a random position from the given ones
+        start_pos = jr.choice(key, start_pos)
+      state = self.pos2state(start_pos)
     return Cliff.InternalState.start(state)
   
   def state2pos(self, state):
@@ -97,12 +115,11 @@ class Cliff(Env):
     return pos[0] * self.width + pos[1]
   
   @classmethod
-  def full(cls):
+  def full(cls) -> "Cliff":
     return cls(
-      start_pos=jnp.array([2,0]),
-      end_pos=jnp.array([2,7]),
-      min_cliff=jnp.array([2,1]),
-      max_cliff=jnp.array([2,6]),
+      start_pos=(2,0),
+      end_pos=(2,7),
+      cliff=Rect(min=(2,1), max=(2,6)),
       rs=Cliff.RewardScheme.full(),
     )
   
