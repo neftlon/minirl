@@ -2,11 +2,8 @@ import pytest
 import jax.numpy as jnp
 from cliff import Cliff
 
-def test_construct_cliff():
-  Cliff.full()
-
 def test_step_to_finish():
-  env = Cliff.full()
+  env = Cliff()
   state = Cliff.InternalState(state=jnp.asarray(15), step=jnp.asarray(0))
   state, reward, done = env.step(state, 1)
   assert state == Cliff.InternalState(state=jnp.asarray(23), step=jnp.asarray(0))
