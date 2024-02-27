@@ -1,87 +1,125 @@
-import dataclasses
-import torch
+import typing, dataclasses, chex
+import jax, jax.numpy as jnp, jax.random as jr
+from util import Env
 
-@dataclasses.dataclass
-class Cliff:
-  "simple environment for cliff"
-  current_step: int = 0 # internal state
-  max_steps: int = 20
+class Rect(typing.NamedTuple):
+  # both are inclusive
+  min: tuple[int, int]
+  max: tuple[int, int]
+
+  def contains(self, p: jax.Array) -> jax.Array:
+    min, max = jnp.asarray(self.min), jnp.asarray(self.max)
+    return jnp.all((min <= p) & (p <= max))
+
+@dataclasses.dataclass(frozen=True)
+class Cliff(Env):
+  start_pos: typing.Optional[tuple[int, int] | typing.Sequence[tuple[int, int]]] # player start position
+  end_pos: typing.Optional[tuple[int, int]] # player end position
+  # rectangular cliff location
+  cliff: typing.Optional[Rect]
+  # reward scheme
+  rs: "Cliff.RewardScheme"
   width: int = 8
   height: int = 3
+  max_steps: int = 20
 
-  MOVE_NAME_AND_DIR = {
-    0: ("^", torch.as_tensor([-1,0])), 1: ("v", torch.as_tensor([1,0])),
-    2: (">", torch.as_tensor([0,1])), 3: ("<", torch.as_tensor([0,-1])),
-  }
+  ACTION2DIR = [[-1,0], [1,0], [0,1], [0,-1]]
+  ACTION2CHAR = {0: "^", 1: "v", 2: ">", 3: "<"}
 
-  def step(self, state: int, action: int) -> tuple[int, float, bool]:
-    """
-    Returns:
-      state: The (observable) state of the environment after taking action
-      reward: This step's reward
-      done: If the environment is finished (either truncated or done)
-    """
-    assert 0 <= action < 4, "action out of bounds"
-    loc = torch.as_tensor(self.state_to_pos(state)) # unpack state
-    move = self.MOVE_NAME_AND_DIR[action][1] # extract dir from move and dir
-    max_pos = torch.as_tensor([self.height - 1, self.width - 1])
-    prop_loc = torch.minimum(torch.maximum(loc + move, torch.as_tensor(0)), max_pos)
-    out_of_bounds = torch.all(loc == prop_loc)
-    if out_of_bounds:
-      return state, -1, self.current_step >= self.max_steps
+  @chex.dataclass(frozen=True)
+  class InternalState(Env.InternalState):
+    state: jax.Array # int
+    step: jax.Array # int
 
-    in_cliff = torch.all((prop_loc[0] == 2) & (1 <= prop_loc[1]) & (prop_loc[1] <= 6))
-    if in_cliff:
-      return state, -100, True # terminate after walking into cliff
-    
-    won = torch.all(prop_loc == torch.as_tensor(Cliff.player_win()))
-    prop_loc = self.pos_to_state(prop_loc).item() # encode location proposal
-    if won:
-      return prop_loc, 20, True # player is in win location
-    # accept move
-    self.current_step += 1
-    return prop_loc, -1, (self.current_step > self.max_steps)
-
-  def reset(self) -> int:
-    self.current_step = 0 # reset step variable
-    return self.pos_to_state(Cliff.player_init())
-
-  def pos_to_state(self, pos):
-    y, x = pos
-    return y * self.width + x
+    @classmethod
+    def start(cls, state) -> "Cliff.InternalState":
+      return cls(state=state, step=jnp.asarray(0))
   
-  def state_to_pos(self, state):
-    if 0 <= state < 24: # state should be in bounds
-      y, x = divmod(state, self.width)
-      return y, x
-    
-    # default to initial location
-    return Cliff.player_init() 
+  class RewardScheme(typing.NamedTuple):
+    step_penalty: int
+    cliff_penalty: int
+    win_reward: int
+    not_in_bounds_penalty: int
+    # (has_won, has_time, in_bounds, in_cliff)
+    done_pos_mask: tuple[bool, bool, bool, bool] # (4,)
+    done_neg_mask: tuple[bool, bool, bool, bool] # (4,)
+
+    @classmethod
+    def full(cls) -> "Cliff.RewardScheme":
+      return cls(
+        step_penalty=-1,
+        cliff_penalty=-4,
+        win_reward=51,
+        not_in_bounds_penalty=0,
+        done_pos_mask=(True,False,False,False),
+        done_neg_mask=(False,True,False,False),
+      )
+
+  def observe(self, internal_state: "InternalState") -> jax.Array: # int
+    return internal_state.state
   
-  def empty(self):
-    field = torch.zeros((self.height, self.width))
-    for x in range(1,7):
-      field[2,x] = 1
-    return field
+  def step(self, internal_state: "InternalState", action: int) -> Env.StepResult:
+    rs = self.rs
 
-  def player_init():
-    "returns initial location of player"
-    return 2, 0
+    # compute proposed step result
+    loc = self.state2pos(internal_state.state)
+    move = jnp.array(self.ACTION2DIR)[action]
+    max_pos = jnp.array([self.height - 1, self.width - 1])
+    prop_loc = jnp.minimum(jnp.maximum(loc + move, jnp.zeros_like(loc)), max_pos)
+    step = internal_state.step + 1
+
+    # compute propositions
+    in_bounds = jnp.any(prop_loc != loc)
+    in_cliff = self.cliff.contains(prop_loc) if self.cliff is not None else jnp.asarray(False)
+    has_won = jnp.all(prop_loc == jnp.asarray(self.end_pos)) if self.end_pos is not None else jnp.asarray(False)
+    has_time = jnp.bool(step < self.max_steps)
+
+    # check if step is valid and compute new state
+    bools = jnp.stack((has_won, has_time, in_bounds, in_cliff))
+    done = jnp.any((bools & jnp.asarray(rs.done_pos_mask)) | (~bools & jnp.asarray(rs.done_neg_mask)))
+    newloc = jnp.where(in_bounds & ~in_cliff, prop_loc, loc)
+    newstate = self.pos2state(newloc)
+    newstep = jnp.where(~done, step, step - 1)
+
+    # compute reward
+    reward = (
+      rs.step_penalty
+      + jnp.where(~in_bounds, rs.not_in_bounds_penalty, 0)
+      + jnp.where(in_cliff, rs.cliff_penalty, 0)
+      + jnp.where(has_won, rs.win_reward, 0)
+    )
+
+    # return new internal state
+    newinternalstate = Cliff.InternalState(state=newstate, step=newstep)
+    return Env.StepResult(state=newinternalstate, reward=reward, done=done)
   
-  def player_win():
-    "Returns location of win"
-    return 2, 7
-
-  def unpack(self, state):
-    field = self.empty()
-    y, x = self.state_to_pos(state)
-    field[y, x] = 2
-    return field
-
-  def pack(self, field):
-    for state in range(0,24):
-      y, x = self.state_to_pos(state)
-      if field[y, x] == 2:
-        return self.pos_to_state((y, x))
-    # default to player init
-    return self.pos_to_state(Cliff.player_init())
+  def reset(self, key) -> "InternalState":
+    if self.start_pos is None:
+      # pick a random position on whole field
+      state = jr.choice(key, 24)
+    else:
+      start_pos = jnp.asarray(self.start_pos)
+      assert start_pos.ndim in [1,2]
+      if start_pos.ndim == 2:
+        # pick a random position from the given ones
+        start_pos = jr.choice(key, start_pos)
+      state = self.pos2state(start_pos)
+    return Cliff.InternalState.start(state)
+  
+  def state2pos(self, state):
+    "int -> (y, x): tuple[int, int]"
+    return jnp.stack(jnp.divmod(state, self.width))
+  
+  def pos2state(self, pos):
+    "(y, x): tuple[int, int] -> int"
+    return pos[0] * self.width + pos[1]
+  
+  @classmethod
+  def full(cls) -> "Cliff":
+    return cls(
+      start_pos=(2,0),
+      end_pos=(2,7),
+      cliff=Rect(min=(2,1), max=(2,6)),
+      rs=Cliff.RewardScheme.full(),
+    )
+  
