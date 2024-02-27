@@ -1,5 +1,21 @@
-import jax, jax.numpy as jnp
-import typing
+import jax, jax.numpy as jnp, jax.random as jr
+import typing, dataclasses, functools
+
+@dataclasses.dataclass(frozen=True)
+class Env:
+  class InternalState: ...
+
+  class StepResult(typing.NamedTuple):
+    state: typing.Any # InternalState
+    reward: jax.Array # float
+    done: jax.Array # bool
+
+  # convert internal state to observable state
+  def observe(self, internal_state: "Env.InternalState") -> typing.Any: ...
+
+  def step(self, internal_state: "Env.InternalState", action) -> "Env.StepResult": ...
+
+  def reset(self) -> "Env.InternalState": ...
 
 class Buf(typing.NamedTuple):
   max_num_eps: jax.Array # int
@@ -66,6 +82,8 @@ class Buf(typing.NamedTuple):
   def empty(self, buf_size: typing.Optional[int] = None) -> "State":
     if buf_size is None:
       buf_size = self.max_num_eps * self.max_episode_len
+    else:
+      buf_size = jnp.asarray(buf_size, dtype=int)
     return Buf.State(
       offset=jnp.asarray(0),
       num_eps=jnp.asarray(0),
@@ -100,3 +118,56 @@ def accumulate_rewards(buf_state, ep_idx, offset, ep_rew):
 def get_episode_reward(buf_state: Buf.State):
   "Returns cumulative reward for each episode"
   return reduce_episodes(accumulate_rewards, jnp.zeros_like(buf_state.ep_ends, dtype=float), buf_state)
+
+def run_episode(key, model, params, buf: Buf, buf_state: Buf.State, env: Env) -> Buf.State:
+  "Run one episode of `env` and store the results in `buf`/`buf_state`."
+  class LoopState(typing.NamedTuple):
+    key: jax.Array
+    env_state: Env.InternalState
+    buf_state: Buf.State
+    done: jax.Array # bool
+
+  def cond(state: LoopState):
+    return ~state.done
+  
+  def body(state: LoopState):
+    obs = env.observe(state.env_state)
+    key, action_key = jr.split(state.key)
+    action = model(params, action_key, obs)
+    env_state, reward, done = env.step(state.env_state, action)
+    buf_state = buf.append(state.buf_state, obs, action, reward)
+    return LoopState(
+      key=key,
+      env_state=env_state,
+      buf_state=buf_state,
+      done=done,
+    )
+
+  state = LoopState(
+    key=key,
+    env_state=env.reset(),
+    buf_state=buf_state,
+    done=jnp.asarray(False),
+  )
+  state = jax.lax.while_loop(cond, body, state)
+  buf_state = buf.end_episode(state.buf_state) # finalize episode
+  return buf_state
+
+@functools.partial(jax.jit, static_argnames=["model"])
+def fill_buffer(key, model, params, buf: Buf, buf_state: Buf.State, env: Env) -> Buf.State:
+  "Run episodes until `buf`/`buf_state` cannot store another episode."
+  class LoopState(typing.NamedTuple):
+    key: jax.Array
+    buf_state: Buf.State
+
+  def cond(state: LoopState):
+    return buf.can_append_episode(state.buf_state)
+  
+  def body(state: LoopState):
+    key, run_key = jr.split(state.key)
+    buf_state = run_episode(run_key, model, params, buf, state.buf_state, env)
+    return LoopState(key, buf_state)
+
+  state = LoopState(key, buf_state)
+  state = jax.lax.while_loop(cond, body, state)
+  return state.buf_state

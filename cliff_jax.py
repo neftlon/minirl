@@ -1,7 +1,9 @@
-import typing
+import typing, chex
 import jax, jax.numpy as jnp
+from util import Env
 
-class Cliff(typing.NamedTuple):
+@chex.dataclass(frozen=True)
+class Cliff(Env):
   start_pos: jax.Array # player start position
   end_pos: jax.Array # player end position
   # quadratic cliff dimensions (both are inclusive)
@@ -15,16 +17,23 @@ class Cliff(typing.NamedTuple):
   ACTION2DIR = [[-1,0], [1,0], [0,1], [0,-1]]
   ACTION2CHAR = {0: "^", 1: "v", 2: ">", 3: "<"}
 
-  class InternalState(typing.NamedTuple):
+  @chex.dataclass(frozen=True)
+  class InternalState(Env.InternalState):
     state: jax.Array # int
-    step: jax.Array = jnp.asarray(0) # int
+    step: jax.Array # int
+
+    @classmethod
+    def start(cls, state) -> "Cliff.InternalState":
+      return cls(state=state, step=jnp.asarray(0))
   
   class RewardScheme(typing.NamedTuple):
     step_penalty: jax.Array # int
     cliff_penalty: jax.Array # int
     win_reward: jax.Array # int
     not_in_bounds_penalty: jax.Array # int
-    #done_fn: typing.Callable # (has_won, has_time, in_bounds, in_cliff): (bool,) * 4 -> bool
+    # (has_won, has_time, in_bounds, in_cliff)
+    done_pos_mask: jax.Array # (4,)
+    done_neg_mask: jax.Array # (4,)
 
     @classmethod
     def full(cls) -> "Cliff.RewardScheme":
@@ -33,13 +42,16 @@ class Cliff(typing.NamedTuple):
         cliff_penalty=jnp.asarray(-4),
         win_reward=jnp.asarray(51),
         not_in_bounds_penalty=jnp.asarray(0),
-        #done_fn=lambda has_won, has_time, _in_bounds, in_cliff: has_won | ~has_time | in_cliff,
+        done_pos_mask=jnp.asarray([True,False,False,False]),
+        done_neg_mask=jnp.asarray([False,True,False,False]),
       )
 
   def observe(self, internal_state: "InternalState") -> jax.Array: # int
     return internal_state.state
   
-  def step(self, internal_state: "InternalState", action: int) -> tuple["InternalState", float, bool]:
+  def step(self, internal_state: "InternalState", action: int) -> Env.StepResult:
+    rs = self.rs
+
     # compute proposed step result
     loc = self.state2pos(internal_state.state)
     move = jnp.array(self.ACTION2DIR)[action]
@@ -54,13 +66,13 @@ class Cliff(typing.NamedTuple):
     has_time = jnp.bool(step < self.max_steps)
 
     # check if step is valid and compute new state
-    done = has_won | ~has_time
+    bools = jnp.stack((has_won, has_time, in_bounds, in_cliff))
+    done = jnp.any((bools & rs.done_pos_mask) | (~bools & rs.done_neg_mask))
     newloc = jnp.where(in_bounds & ~in_cliff, prop_loc, loc)
     newstate = self.pos2state(newloc)
     newstep = jnp.where(~done, step, step - 1)
 
     # compute reward
-    rs = self.rs
     reward = (
       rs.step_penalty
       + jnp.where(~in_bounds, rs.not_in_bounds_penalty, 0)
@@ -69,11 +81,12 @@ class Cliff(typing.NamedTuple):
     )
 
     # return new internal state
-    return Cliff.InternalState(state=newstate, step=newstep), reward, done
+    newinternalstate = Cliff.InternalState(state=newstate, step=newstep)
+    return Env.StepResult(state=newinternalstate, reward=reward, done=done)
   
   def reset(self) -> "InternalState":
     state = self.pos2state(self.start_pos)
-    return Cliff.InternalState(state)
+    return Cliff.InternalState.start(state)
   
   def state2pos(self, state):
     "int -> (y, x): tuple[int, int]"
