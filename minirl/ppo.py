@@ -1,5 +1,5 @@
 import jax, jax.numpy as jnp, functools
-from util import Buf, get_episode_reward, reduce_episodes
+from .util import Buf, get_episode_reward, reduce_episodes
 
 @functools.partial(jax.jit, static_argnames=["model"])
 def expected_reward(model, params, buf_state: Buf.State) -> jax.Array:

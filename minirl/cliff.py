@@ -1,6 +1,6 @@
 import typing, dataclasses, chex
 import jax, jax.numpy as jnp, jax.random as jr
-from util import Env
+from .util import Env
 
 class Rect(typing.NamedTuple):
   # both are inclusive
