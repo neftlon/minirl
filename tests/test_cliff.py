@@ -1,6 +1,6 @@
 import pytest
 import jax.numpy as jnp
-from cliff import Cliff
+from minirl.cliff import Cliff
 
 def test_step_to_finish():
   env = Cliff()

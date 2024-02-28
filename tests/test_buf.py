@@ -1,7 +1,7 @@
 import pytest
 import jax.numpy as jnp, jax.random as jr
 from jax.experimental import io_callback
-from util import Buf, reduce_episodes
+from minirl.util import Buf, reduce_episodes
 
 @pytest.mark.parametrize("obs_shape", [(), (2,), (3,4)])
 def test_obs_shape(obs_shape):
