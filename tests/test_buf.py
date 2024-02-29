@@ -35,5 +35,21 @@ def test_obs_shape(obs_shape):
   # NB: wrap with io_callback to allow arbitray python control flow in checker function
   assert reduce_episodes(lambda *args: io_callback(f, (), *args), (), buf_state) == ()
 
+def test_compute_rtg():
+  buf_state = Buf.State(
+    offset=jnp.asarray(10),
+    num_eps=jnp.asarray(3),
+    ep_ends=jnp.array([2, 6, 10, 0]),
+    # NB: observations and actions are not valid, but this does not matter for reward calculation
+    observations=jnp.zeros(()),
+    actions=jnp.zeros(()),
+    rewards=jnp.array([-1, 3, 2, -1, -2, -1, -1, 3, 2, -1, 0], dtype=float),
+  )
+  rtg = buf_state.get_reward_to_go()
+  expected_rtg = jnp.array([2, 3, -2, -4, -3, -1, 3, 4, 1, -1, 0], dtype=float)
+  print(rtg)
+  print(expected_rtg)
+  assert jnp.allclose(rtg, expected_rtg)
+
 if __name__ == "__main__":
   pytest.main([__file__])

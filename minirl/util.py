@@ -42,6 +42,27 @@ class Buf(typing.NamedTuple):
     @property
     def buf_size(self) -> int:
       return len(self.observations)
+    
+    def get_reward_to_go(self):
+      class ScanState(typing.NamedTuple):
+        epidx: jax.Array # int
+        offset: jax.Array # int
+        accum: jax.Array # float
+
+      def f(state: ScanState, r: jax.Array):
+        pass_border = (state.offset + 1) == self.ep_ends[state.epidx]
+        accum = jnp.where(pass_border, 0., state.accum)
+        epidx = jnp.where(pass_border, state.epidx - 1, state.epidx)
+        accum += r
+        return ScanState(epidx=epidx, offset=state.offset - 1, accum=accum), accum
+
+      state = ScanState(
+        epidx=self.num_eps - 1, # start at last episode
+        offset=jnp.asarray(len(self.rewards) - 1),
+        accum=jnp.asarray(0.),
+      )
+      _, rtg = jax.lax.scan(f, state, self.rewards, reverse=True)
+      return rtg
 
     def reset(self) -> "Buf.State":
       return Buf.State(
