@@ -18,7 +18,7 @@ class Env:
   def reset(self, key: jax.Array) -> "Env.InternalState": ...
 
 class Buf(typing.NamedTuple):
-  max_num_eps: int
+  buf_size: int # size of buffer in steps
   max_episode_len: int
   obs_shape: tuple[int, ...] = () # shape of the observations
 
@@ -38,10 +38,6 @@ class Buf(typing.NamedTuple):
     @property
     def ep_lens(self) -> jax.Array:
       return self.ep_ends - self.ep_starts
-    
-    @property
-    def buf_size(self) -> int:
-      return len(self.observations)
     
     def get_reward_to_go(self):
       class ScanState(typing.NamedTuple):
@@ -73,14 +69,16 @@ class Buf(typing.NamedTuple):
         actions=self.actions,
         rewards=self.rewards,
       )
-  
+
   def can_append_episode(self, state: "State") -> jax.Array: # bool
-    free = state.buf_size - state.offset
-    return (state.num_eps <= self.max_num_eps) & (free >= self.max_episode_len)
+    free = self.buf_size - state.offset
+    return free >= self.max_episode_len
 
   def append(self, state: "State", obs, action, reward) -> "State":
     newoffset = state.offset + 1
-    in_bounds = newoffset < len(state.observations)
+    # NB: newoffset can be one past the last writable index since below only the penultimate
+    # index will be written to
+    in_bounds = newoffset <= len(state.observations)
     return Buf.State(
       offset=jnp.where(in_bounds, newoffset, state.offset),
       num_eps=state.num_eps,
@@ -101,19 +99,18 @@ class Buf(typing.NamedTuple):
       rewards=state.rewards,
     )
   
-  def empty(self, buf_size: typing.Optional[int] = None) -> "State":
-    if buf_size is None:
-      buf_size = self.max_num_eps * self.max_episode_len
+  def empty(self) -> "State":
     return Buf.State(
       offset=jnp.zeros((), dtype=int),
       num_eps=jnp.zeros((), dtype=int),
-      ep_ends=jnp.zeros(self.max_num_eps, dtype=int),
-      observations=jnp.zeros((buf_size,) + self.obs_shape, dtype=int),
-      actions=jnp.zeros(buf_size, dtype=int),
-      rewards=jnp.zeros(buf_size),
+      # NB: in this buffer setting, it would be possible that each episode only occupies one slot
+      ep_ends=jnp.zeros(self.buf_size, dtype=int),
+      observations=jnp.zeros((self.buf_size,) + self.obs_shape, dtype=int),
+      actions=jnp.zeros(self.buf_size, dtype=int),
+      rewards=jnp.zeros(self.buf_size),
     )
 
-def reduce_episodes(fn, carry_init, buf_state: Buf.State):
+def reduce_episodes(fn, carry_init, buf: Buf, buf_state: Buf.State):
   """
   Args:
     fn: (buf_state, epidx, offset, carry) -> newcarry
@@ -136,7 +133,7 @@ def reduce_episodes(fn, carry_init, buf_state: Buf.State):
     return LoopState(carry=carry, epidx=epidx)
   
   state = LoopState(carry_init, jnp.asarray(0))
-  state = jax.lax.fori_loop(0, buf_state.buf_size, body, state)
+  state = jax.lax.fori_loop(0, buf.buf_size, body, state)
   return state.carry
 
 # compute sum of rewards for each episode
@@ -144,16 +141,15 @@ def accumulate_rewards(buf_state, ep_idx, offset, ep_rew):
   reward = buf_state.rewards[offset]
   return ep_rew.at[ep_idx].set(ep_rew[ep_idx] + reward)
 
-def get_episode_reward(buf_state: Buf.State):
+def get_episode_reward(buf: Buf, buf_state: Buf.State):
   "Returns cumulative reward for each episode"
-  return reduce_episodes(accumulate_rewards, jnp.zeros_like(buf_state.ep_ends, dtype=float), buf_state)
+  return reduce_episodes(accumulate_rewards, jnp.zeros_like(buf_state.ep_ends, dtype=float), buf, buf_state)
 
 def run_episode(
-  key, model, params, buf: Buf, buf_state: Buf.State, env: Env, max_episode_len: typing.Optional[int] = None,
+  key, model, model_params, model_state, buf: Buf, buf_state: Buf.State, env: Env, max_episode_len: typing.Optional[int] = None,
 ) -> Buf.State:
   "Run one episode of `env` and store the results in `buf`/`buf_state`."
   class LoopState(typing.NamedTuple):
-    key: jax.Array
     env_state: Env.InternalState
     buf_state: Buf.State
     done: jax.Array # bool
@@ -164,23 +160,19 @@ def run_episode(
   
   def body(state: LoopState):
     obs = env.observe(state.env_state)
-    key, action_key = jr.split(state.key)
-    action = model(params, action_key, obs)
+    action = model(model_params, model_state, obs)
     env_state, reward, done = env.step(state.env_state, action)
     buf_state = buf.append(state.buf_state, obs, action, reward)
     timer = state.timer - (1 if max_episode_len is not None else 0)
     return LoopState(
-      key=key,
       env_state=env_state,
       buf_state=buf_state,
       done=done,
       timer=timer,
     )
 
-  key, reset_key = jr.split(key)
   state = LoopState(
-    key=key,
-    env_state=env.reset(reset_key),
+    env_state=env.reset(key),
     buf_state=buf_state,
     done=jnp.asarray(False),
     # set timer to 1 such that it never reaches 0 if environment is capable of tracking that itself
@@ -192,7 +184,7 @@ def run_episode(
 
 @functools.partial(jax.jit, static_argnames=["model", "env", "max_episode_len"])
 def fill_buffer(
-  key, model, params, buf: Buf, buf_state: Buf.State, env: Env, max_episode_len: typing.Optional[int] = None,
+  key, model, model_params, model_state, buf: Buf, buf_state: Buf.State, env: Env, max_episode_len: typing.Optional[int] = None,
 ) -> Buf.State:
   "Run episodes until `buf`/`buf_state` cannot store another episode."
   class LoopState(typing.NamedTuple):
@@ -204,7 +196,7 @@ def fill_buffer(
   
   def body(state: LoopState):
     key, run_key = jr.split(state.key)
-    buf_state = run_episode(run_key, model, params, buf, state.buf_state, env, max_episode_len)
+    buf_state = run_episode(run_key, model, model_params, model_state, buf, state.buf_state, env, max_episode_len)
     return LoopState(key, buf_state)
 
   state = LoopState(key, buf_state)
