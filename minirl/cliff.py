@@ -15,9 +15,9 @@ class Rect(typing.NamedTuple):
 class Cliff(Env):
   class RewardScheme(typing.NamedTuple):
     step_penalty: int = -1
-    cliff_penalty: int = -4
-    win_reward: int = 51
-    not_in_bounds_penalty: int = 0
+    cliff_penalty: int = -29
+    win_reward: int = 101
+    not_in_bounds_penalty: int = -4
     # (has_won, has_time, in_bounds, in_cliff)
     done_pos_mask: tuple[bool, bool, bool, bool] = (True,False,False,False) # (4,)
     done_neg_mask: tuple[bool, bool, bool, bool] = (False,True,False,False)# (4,)

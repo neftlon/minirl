@@ -1,5 +1,6 @@
 import jax, jax.numpy as jnp, jax.random as jr
 import typing, math
+from .sched import ExpSchedule
 
 class Embedding(typing.NamedTuple):
   num_emb: int
@@ -63,29 +64,6 @@ class EpsGreedy(typing.NamedTuple):
 
   def init(self, key):
     return self.logits_model.init(key)
-
-class ExpSchedule(typing.NamedTuple):
-  r"Exponential schedule yielding numbers according to $a\cdot\exp(bt)+c$ where $t$ is guided by the parameter."
-  a: float # scale of exponential function
-  b: float # weight of x before exp-ing it
-  c: float # offset from x-axis
-
-  def __call__(self, params) -> jax.Array:
-    t = params
-    return self.a * jnp.exp(self.b * t) + self.c
-
-  def step(self, params):
-    # increase current step
-    t = jax.lax.stop_gradient(params) # disallow gradient computation on t
-    return t + 1
-
-  def init(self):
-    return jnp.asarray(0, dtype=int)
-
-  @classmethod
-  def from_points(cls, x1: tuple[float, float], x2: tuple[float, float]):
-    b = math.log(x1[1] / x2[1]) / (x1[0] - x2[0])
-    return cls(a=x2[0] / math.exp(b * x1[0]), b=b, c=0.)
 
 class TemperatureSampler(typing.NamedTuple):
   logits_model: typing.Any
