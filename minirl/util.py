@@ -39,6 +39,11 @@ class Buf(typing.NamedTuple):
     def ep_lens(self) -> jax.Array:
       return self.ep_ends - self.ep_starts
     
+    def get_avg_return(self):
+      mask = jnp.arange(len(self.rewards)) < self.offset
+      return jnp.sum(self.rewards[mask]) / self.num_eps
+
+    
     def get_reward_to_go(self):
       class ScanState(typing.NamedTuple):
         epidx: jax.Array # int
@@ -150,6 +155,7 @@ def run_episode(
 ) -> Buf.State:
   "Run one episode of `env` and store the results in `buf`/`buf_state`."
   class LoopState(typing.NamedTuple):
+    key: jax.Array
     env_state: Env.InternalState
     buf_state: Buf.State
     done: jax.Array # bool
@@ -160,19 +166,23 @@ def run_episode(
   
   def body(state: LoopState):
     obs = env.observe(state.env_state)
-    action = model(model_params, model_state, obs)
+    key, action_key = jr.split(state.key)
+    action = model(model_params, model_state, action_key, obs)
     env_state, reward, done = env.step(state.env_state, action)
     buf_state = buf.append(state.buf_state, obs, action, reward)
     timer = state.timer - (1 if max_episode_len is not None else 0)
     return LoopState(
+      key=key,
       env_state=env_state,
       buf_state=buf_state,
       done=done,
       timer=timer,
     )
 
+  key, env_key = jr.split(key)
   state = LoopState(
-    env_state=env.reset(key),
+    key=key,
+    env_state=env.reset(env_key),
     buf_state=buf_state,
     done=jnp.asarray(False),
     # set timer to 1 such that it never reaches 0 if environment is capable of tracking that itself

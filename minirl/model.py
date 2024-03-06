@@ -91,33 +91,36 @@ class TemperatureSampler(typing.NamedTuple):
   logits_model: typing.Any
   sched: ExpSchedule
 
-  def __call__(self, model_params, model_state, x) -> jax.Array:
+  def __call__(self, model_params, model_state, key, x) -> jax.Array:
+    sched_state = model_state
+
     # compute logits
     logits = self.logits_model(model_params, x)
 
     # scale logits by temperature tau
-    tau = self.sched(model_state["sched"]) # get temperature from schedule
+    tau = self.sched(sched_state) # get temperature from schedule
     logits = logits / tau
 
     # sample action from logits
-    return jr.categorical(model_state["key"], logits)
+    return jr.categorical(key, logits)
   
   def logp(self, model_params, model_state, x, y):
+    sched_state = model_state
+
     logits = self.logits_model(model_params, x)
     
     # weight logits by tau
-    tau = self.sched(model_state["sched"]) # get temperature from schedule
+    tau = self.sched(sched_state) # get temperature from schedule
     logits = logits / tau
 
     # extract log-probability for action
     return jax.nn.log_softmax(logits)[y]
   
   def step(self, model_state):
-    sched, key = model_state["sched"], model_state["key"]
-    return {"sched": self.sched.step(sched), "key": jr.split(key)[0]}
+    sched = model_state
+    return self.sched.step(sched)
   
   def init(self, key):
-    model_key, state_key = jr.split(key)
-    model_params = self.logits_model.init(model_key)
-    model_state = {"sched": self.sched.init(), "key": state_key}
+    model_params = self.logits_model.init(key)
+    model_state = self.sched.init()
     return model_params, model_state

@@ -61,7 +61,7 @@ class Cliff(Env):
     in_bounds = jnp.any(prop_loc != loc)
     in_cliff = self.cliff.contains(prop_loc) if self.cliff is not None else jnp.asarray(False)
     has_won = jnp.all(prop_loc == jnp.asarray(self.end_pos)) if self.end_pos is not None else jnp.asarray(False)
-    has_time = jnp.bool(step < self.max_steps)
+    has_time = jnp.asarray(step < self.max_steps)
 
     # check if step is valid and compute new state
     bools = jnp.stack((has_won, has_time, in_bounds, in_cliff))
