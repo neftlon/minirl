@@ -1,7 +1,7 @@
 import pytest
 import jax.numpy as jnp, jax.random as jr
 from jax.experimental import io_callback
-from minirl.util import Buf, reduce_episodes
+from minirl.buf import SeqBuf
 
 @pytest.mark.parametrize("obs_shape", [(), (2,), (3,4)])
 def test_obs_shape(obs_shape):
@@ -14,7 +14,7 @@ def test_obs_shape(obs_shape):
   action = jr.randint(keys[1], (num_steps,), 0, 5)
   reward = jr.uniform(keys[2], (num_steps,), minval=-5, maxval=5)
 
-  buf = Buf(buf_size, max_episode_len, obs_shape=obs_shape)
+  buf = SeqBuf(buf_size, max_episode_len, obs_shape=obs_shape)
   buf_state = buf.empty()
   for t in zip(obs, action, reward):
     buf_state = buf.append(buf_state, *t)
@@ -27,17 +27,17 @@ def test_obs_shape(obs_shape):
   assert jnp.allclose(buf_state.observations[:num_steps], obs)
 
   # check by iteration
-  def f(buf_state: Buf.State, epidx, offset, carry):
+  def f(buf_state: SeqBuf.State, epidx, offset, carry):
     if epidx < 1:
       # there is only one episode inside
       assert buf_state.observations[offset].shape == obs_shape
     return carry
   # NB: wrap with io_callback to allow arbitray python control flow in checker function
-  assert reduce_episodes(lambda *args: io_callback(f, (), *args), (), buf, buf_state) == ()
+  assert buf.reduce_episodes(buf_state, lambda *args: io_callback(f, (), *args), ()) == ()
 
 @pytest.mark.parametrize("buf_state,expected_rtg", [
   (
-    Buf.State(
+    SeqBuf.State(
       offset=jnp.asarray(10),
       num_eps=jnp.asarray(3),
       ep_ends=jnp.array([2, 6, 10, 0]),
@@ -49,7 +49,7 @@ def test_obs_shape(obs_shape):
     jnp.array([2, 3, -2, -4, -3, -1, 3, 4, 1, -1, 0], dtype=float),
   ),
   (
-    Buf.State(
+    SeqBuf.State(
       offset=jnp.asarray(4),
       num_eps=jnp.asarray(2),
       ep_ends=jnp.asarray([2,4]),
@@ -60,7 +60,7 @@ def test_obs_shape(obs_shape):
     jnp.asarray([1,2,-2,-1,0,0], dtype=float)
   ),
   (
-    Buf.State(
+    SeqBuf.State(
       offset=jnp.asarray(18),
       num_eps=jnp.asarray(2),
       ep_ends=jnp.asarray([9,18]),
@@ -72,13 +72,14 @@ def test_obs_shape(obs_shape):
   ),
 ])
 def test_compute_rtg(buf_state, expected_rtg):
-  rtg = buf_state.get_reward_to_go()
+  buf = SeqBuf(len(buf_state.rewards), len(buf_state.rewards))
+  rtg = buf.get_reward_to_go(buf_state)
   print(rtg)
   print(expected_rtg)
   assert jnp.allclose(rtg, expected_rtg)
 
 def test_fill():
-  buf = Buf(4, 2)
+  buf = SeqBuf(4, 2)
   buf_state = buf.empty()
   
   # append first episode
