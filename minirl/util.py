@@ -1,5 +1,4 @@
-import jax, jax.numpy as jnp, jax.random as jr
-import typing, dataclasses, functools
+import jax, typing, dataclasses
 
 @dataclasses.dataclass(frozen=True)
 class Env:

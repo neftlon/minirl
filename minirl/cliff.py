@@ -15,22 +15,22 @@ class Rect(typing.NamedTuple):
 class Cliff(Env):
   class RewardScheme(typing.NamedTuple):
     step_penalty: int = -1
-    cliff_penalty: int = -29
-    win_reward: int = 101
-    not_in_bounds_penalty: int = -4
+    cliff_penalty: int = -99 # with step_penalty, this sums to -100
+    win_reward: int = 21 # with step_penalty, this sums to 20
+    not_in_bounds_penalty: int = -2
     # (has_won, has_time, in_bounds, in_cliff)
     done_pos_mask: tuple[bool, bool, bool, bool] = (True,False,False,False) # (4,)
     done_neg_mask: tuple[bool, bool, bool, bool] = (False,True,False,False)# (4,)
   
-  start_pos: typing.Optional[tuple[int, int] | tuple[tuple[int, int], ...]] = (2,0) # player start position
-  end_pos: typing.Optional[tuple[int, int]] = (2,7) # player end position
+  start_pos: typing.Optional[tuple[int, int] | tuple[tuple[int, int], ...]] = (3,0) # player start position
+  end_pos: typing.Optional[tuple[int, int]] = (3,11) # player end position
   # rectangular cliff location
-  cliff: typing.Optional[Rect] = Rect(min=(2,1), max=(2,6))
+  cliff: typing.Optional[Rect] = Rect(min=(3,1), max=(3,10))
   # reward scheme
   reward_scheme: "Cliff.RewardScheme" = RewardScheme()
-  width: int = 8
-  height: int = 3
-  max_steps: int = 20
+  width: int = 12
+  height: int = 4
+  max_steps: int = 50
 
   ACTION2DIR = [[-1,0], [1,0], [0,1], [0,-1]]
   ACTION2CHAR = {0: "^", 1: "v", 2: ">", 3: "<"}

@@ -1,5 +1,4 @@
-import jax, jax.numpy as jnp, jax.random as jr
-import typing, math
+import jax, jax.numpy as jnp, jax.random as jr, typing
 from .sched import ExpSchedule
 
 class Embedding(typing.NamedTuple):
@@ -41,20 +40,20 @@ class EpsGreedy(typing.NamedTuple):
   num_actions: int
   eps: float = .1
 
-  def __call__(self, params, key, x):
+  def __call__(self, model_params, _model_state, key, x) -> jax.Array:
     key, eps_key = jr.split(key)
     # use cond to run the model only when it's necessary
     return jax.lax.cond(
       jr.uniform(eps_key) >= self.eps,
       # take model's prediction (greedy)
-      lambda: self.logits_model(params, x).argmax(axis=-1),
+      lambda: self.logits_model(model_params, x).argmax(axis=-1),
       # select a random action
       lambda: jr.choice(key, self.num_actions),
     )
   
-  def logp(self, params, x, y):
+  def logp(self, model_params, _model_state, x, y):
     # compute prediction's logp
-    logits = self.logits_model(params, x)
+    logits = self.logits_model(model_params, x)
     model_logp = jax.nn.log_softmax(logits)[y]
     # weight logp according to action selection strategy
     return jnp.log(self.eps / self.num_actions + (1 - self.eps) * jnp.exp(model_logp))
@@ -63,7 +62,7 @@ class EpsGreedy(typing.NamedTuple):
     ...
 
   def init(self, key):
-    return self.logits_model.init(key)
+    return self.logits_model.init(key), ()
 
 class TemperatureSampler(typing.NamedTuple):
   logits_model: typing.Any
