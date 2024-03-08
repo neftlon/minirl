@@ -25,8 +25,8 @@ class SeqBuf(typing.NamedTuple):
 
     def reset(self) -> "SeqBuf.State":
       return SeqBuf.State(
-        offset=jnp.asarray(0),
-        num_eps=jnp.asarray(0),
+        offset=jnp.array(0, dtype=int),
+        num_eps=jnp.array(0, dtype=int),
         ep_ends=self.ep_ends,
         observations=self.observations,
         actions=self.actions,
@@ -142,7 +142,7 @@ class SeqBuf(typing.NamedTuple):
   def run_episode(
     self, state, key, model, model_params, model_state, env, max_episode_len: typing.Optional[int] = None,
   ) -> "SeqBuf.State":
-    "Run one episode of `env` and store the results in `buf`/`buf_state`."
+    "Run one episode of `env` and store the results in `buf_state`."
     class LoopState(typing.NamedTuple):
       key: jax.Array
       env_state: typing.Any

@@ -40,7 +40,9 @@ class EpsGreedy(typing.NamedTuple):
   num_actions: int
   eps: float = .1
 
-  def __call__(self, model_params, _model_state, key, x) -> jax.Array:
+  def __call__(self, model_params, model_state, key, x) -> jax.Array:
+    assert model_state == ()
+    
     key, eps_key = jr.split(key)
     # use cond to run the model only when it's necessary
     return jax.lax.cond(
@@ -51,7 +53,9 @@ class EpsGreedy(typing.NamedTuple):
       lambda: jr.choice(key, self.num_actions),
     )
   
-  def logp(self, model_params, _model_state, x, y):
+  def logp(self, model_params, model_state, x, y):
+    assert model_state == ()
+
     # compute prediction's logp
     logits = self.logits_model(model_params, x)
     model_logp = jax.nn.log_softmax(logits)[y]
