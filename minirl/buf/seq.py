@@ -4,6 +4,7 @@ class SeqBuf(typing.NamedTuple):
   buf_size: int # size of buffer in steps
   max_episode_len: int
   obs_shape: tuple[int, ...] = () # shape of the observations
+  gamma: float = 1. # discount factor for rewards
 
   class State(typing.NamedTuple):
     offset: jax.Array # int, current location in the buffer
@@ -96,6 +97,11 @@ class SeqBuf(typing.NamedTuple):
     return free >= self.max_episode_len
 
   def append(self, state: "State", obs, action, reward) -> "State":
+    # apply discount to reward
+    k = state.offset - state.ep_starts[state.num_eps] # get offset in episode
+    discount = jnp.asarray(self.gamma) ** k
+    reward = discount * reward
+
     newoffset = state.offset + 1
     # NB: newoffset can be one past the last writable index since below only the penultimate
     # index will be written to

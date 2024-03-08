@@ -99,5 +99,25 @@ def test_fill():
   assert jnp.allclose(buf_state.actions, jnp.arange(1,5))
   assert jnp.allclose(buf_state.rewards, jnp.arange(1.,5.))
 
+@pytest.mark.parametrize("gamma", [.1, .8, .9, 1.])
+def test_discount(gamma):
+  # create a buffer with a specific gamma
+  buf = SeqBuf(7, 3, gamma=gamma)
+
+  # fill buffer
+  buf_state = buf.empty()
+  buf_state = buf.append(buf_state, 1, 1, 1.)
+  buf_state = buf.append(buf_state, 2, 2, 2.)
+  buf_state = buf.append(buf_state, 3, 3, 3.)
+  buf_state = buf.end_episode(buf_state)
+  buf_state = buf.append(buf_state, 4, 4, 4.)
+  buf_state = buf.append(buf_state, 5, 5, 5.)
+  buf_state = buf.end_episode(buf_state)
+  
+  ep_rewards = buf.get_episode_reward(buf_state)[:buf_state.num_eps]
+  assert len(ep_rewards) == 2
+  assert jnp.allclose(ep_rewards[0], 1. + gamma * 2. + gamma ** 2 * 3.)
+  assert jnp.allclose(ep_rewards[1], 4. + gamma * 5.)
+
 if __name__ == "__main__":
   pytest.main([__file__])
